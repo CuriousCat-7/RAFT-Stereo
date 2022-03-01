@@ -23,7 +23,6 @@ class RAFTStereo(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        
         context_dims = args.hidden_dims
 
         self.cnet = MultiBasicEncoder(output_dim=[args.hidden_dims, context_dims], norm_fn="batch", downsample=args.n_downsample)
@@ -67,7 +66,7 @@ class RAFTStereo(nn.Module):
         return up_flow.reshape(N, D, factor*H, factor*W)
 
 
-    def forward(self, image1, image2, iters=12, flow_init=None, test_mode=False):
+    def forward(self, image1, image2, iters=12, flow_init=None, test_mode=False, export_mode=False):
         """ Estimate optical flow between pair of frames """
 
         image1 = (2 * (image1 / 255.0) - 1.0).contiguous()
@@ -78,13 +77,15 @@ class RAFTStereo(nn.Module):
             if self.args.shared_backbone:
                 *cnet_list, x = self.cnet(torch.cat((image1, image2), dim=0), dual_inp=True, num_layers=self.args.n_gru_layers)
                 fmap1, fmap2 = self.conv2(x).split(dim=0, split_size=x.shape[0]//2)
+                # NOTE cnet_list : [ [T[1, 128, 68, 120], T[1, 128, 68, 120] ], [ T[1, 128, 34, 60], T[1, 128, 34, 60]] ]
+                # NOTE fmap1/ fmap2: T[1, 256, 68, 120]
             else:
                 cnet_list = self.cnet(image1, num_layers=self.args.n_gru_layers)
                 fmap1, fmap2 = self.fnet([image1, image2])
             net_list = [torch.tanh(x[0]) for x in cnet_list]
             inp_list = [torch.relu(x[1]) for x in cnet_list]
 
-            # Rather than running the GRU's conv layers on the context features multiple times, we do it once at the beginning 
+            # Rather than running the GRU's conv layers on the context features multiple times, we do it once at the beginning
             inp_list = [list(conv(i).split(split_size=conv.out_channels//3, dim=1)) for i,conv in zip(inp_list, self.context_zqr_convs)]
 
         if self.args.corr_implementation == "reg": # Default
@@ -98,16 +99,21 @@ class RAFTStereo(nn.Module):
         elif self.args.corr_implementation == "alt_cuda": # Faster version of alt
             corr_block = AlternateCorrBlock
         corr_fn = corr_block(fmap1, fmap2, radius=self.args.corr_radius, num_levels=self.args.corr_levels)
+        corr_fn2 = PytorchAlternateCorrBlock1D(fmap1, fmap2, radius=self.args.corr_radius, num_levels=self.args.corr_levels)
 
         coords0, coords1 = self.initialize_flow(net_list[0])
+        # NOTE mesh grid
 
         if flow_init is not None:
             coords1 = coords1 + flow_init
 
         flow_predictions = []
+        # NOTE ConvGRU 环节, 不断update flow
         for itr in range(iters):
             coords1 = coords1.detach()
-            corr = corr_fn(coords1) # index correlation volume
+            corr = corr_fn(coords1) # index correlation volume NOTE 取coords1 index 下的corr内容
+            corr2 = corr_fn2(coords1)
+            corr_diff = (corr - corr2)
             flow = coords1 - coords0
             with autocast(enabled=self.args.mixed_precision):
                 if self.args.n_gru_layers == 3 and self.args.slow_fast_gru: # Update low-res GRU
@@ -136,6 +142,9 @@ class RAFTStereo(nn.Module):
             flow_predictions.append(flow_up)
 
         if test_mode:
-            return coords1 - coords0, flow_up
+            if not export_mode:
+                return coords1 - coords0, flow_up
+            else:
+                return flow_up
 
         return flow_predictions

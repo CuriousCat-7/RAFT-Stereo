@@ -7,6 +7,7 @@ try:
 except:
     pass
 
+import alt_cuda_corr
 try:
     import alt_cuda_corr
 except:
@@ -56,8 +57,10 @@ class CorrBlockFast1D:
         _, _, _, W2 = fmap2.shape
         fmap1 = fmap1.view(B, D, H, W1)
         fmap2 = fmap2.view(B, D, H, W2)
-        corr = torch.einsum('aijk,aijh->ajkh', fmap1, fmap2)
-        corr = corr.reshape(B, H, W1, 1, W2).contiguous()
+        #corr = torch.einsum('aijk,aijh->ajkh', fmap1, fmap2)
+        #corr = corr.reshape(B, H, W1, 1, W2).contiguous()
+        # equivenlent:
+        corr = torch.bmm(fmap1.transpose(1,2).reshape(-1, D, W1).transpose(-1,-2), fmap2.transpose(1,2).reshape(-1,D,W2)).reshape(B, H, W1, 1, W2)
         return corr / torch.sqrt(torch.tensor(D).float())
 
 
@@ -124,7 +127,7 @@ class CorrBlock1D:
             corr = F.avg_pool2d(corr, [1,2], stride=[1,2])
             self.corr_pyramid.append(corr)
 
-    def __call__(self, coords):
+    def __call__(self, coords): # coords 记录w维度的想要的index的坐标索引, 且是float的, 所以索引不一定是正好是那个像素
         r = self.radius
         coords = coords[:, :1].permute(0, 2, 3, 1)
         batch, h1, w1, _ = coords.shape
@@ -133,8 +136,8 @@ class CorrBlock1D:
         for i in range(self.num_levels):
             corr = self.corr_pyramid[i]
             dx = torch.linspace(-r, r, 2*r+1)
-            dx = dx.view(1, 1, 2*r+1, 1).to(coords.device)
-            x0 = dx + coords.reshape(batch*h1*w1, 1, 1, 1) / 2**i
+            dx = dx.view(1, 1, 2*r+1, 1).to(coords.device)  # 并且提取左右的九个
+            x0 = dx + coords.reshape(batch*h1*w1, 1, 1, 1) / 2**i # (b*h*w) x 1 x (2*r+1) x 1
             y0 = torch.zeros_like(x0)
 
             coords_lvl = torch.cat([x0,y0], dim=-1)
@@ -142,7 +145,7 @@ class CorrBlock1D:
             corr = corr.view(batch, h1, w1, -1)
             out_pyramid.append(corr)
 
-        out = torch.cat(out_pyramid, dim=-1)
+        out = torch.cat(out_pyramid, dim=-1) # corrds 指引下的左右9个的corr 和4个缩放level下的concat, 一共36个，所以为b,h,w,36
         return out.permute(0, 3, 1, 2).contiguous().float()
 
     @staticmethod
@@ -151,14 +154,16 @@ class CorrBlock1D:
         _, _, _, W2 = fmap2.shape
         fmap1 = fmap1.view(B, D, H, W1)
         fmap2 = fmap2.view(B, D, H, W2)
-        corr = torch.einsum('aijk,aijh->ajkh', fmap1, fmap2)
-        corr = corr.reshape(B, H, W1, 1, W2).contiguous()
+        #corr = torch.einsum('aijk,aijh->ajkh', fmap1, fmap2)
+        #corr = corr.reshape(B, H, W1, 1, W2).contiguous()
+        # equivenlent:
+        corr = torch.bmm(fmap1.transpose(1,2).reshape(-1, D, W1).transpose(-1,-2), fmap2.transpose(1,2).reshape(-1,D,W2)).reshape(B, H, W1, 1, W2)
         return corr / torch.sqrt(torch.tensor(D).float())
 
 
 class AlternateCorrBlock:
     def __init__(self, fmap1, fmap2, num_levels=4, radius=4):
-        raise NotImplementedError
+        #raise NotImplementedError
         self.num_levels = num_levels
         self.radius = radius
 

@@ -4,7 +4,8 @@
 #include <vector>
 
 
-#define BLOCK_H 4
+//#define BLOCK_H 4
+#define BLOCK_H 1
 #define BLOCK_W 8
 #define BLOCK_HW BLOCK_H * BLOCK_W
 #define CHANNEL_STRIDE 32
@@ -72,7 +73,7 @@ __global__ void corr_forward_kernel(
         for (int ix=0; ix<rd+1; ix++) {
           for (int k=0; k<BLOCK_HW; k+=BLOCK_HW/CHANNEL_STRIDE) {
             int k1 = k + tid / CHANNEL_STRIDE;
-            int h2 = static_cast<int>(floor(y2s[k1]))-r+iy;
+            int h2 = static_cast<int>(floor(y2s[k1]))+iy;
             int w2 = static_cast<int>(floor(x2s[k1]))-r+ix;
             int c2 = tid % CHANNEL_STRIDE;
 
@@ -182,11 +183,12 @@ __global__ void corr_backward_kernel(
       scalar_t dy = y2s[tid] - floor(y2s[tid]);
 
       int rd = 2*r + 1;
-      for (int iy=0; iy<rd+1; iy++) {
-        for (int ix=0; ix<rd+1; ix++) {
+      for (int ix=0; ix<rd+1; ix++) {
+        const int iy = r;
           for (int k=0; k<BLOCK_HW; k+=BLOCK_HW/CHANNEL_STRIDE) {
             int k1 = k + tid / CHANNEL_STRIDE;
-            int h2 = static_cast<int>(floor(y2s[k1]))-r+iy;
+            //int h2 = static_cast<int>(floor(y2s[k1]))-r+iy;
+            int h2 = static_cast<int>(floor(y2s[k1])) -r + iy;
             int w2 = static_cast<int>(floor(x2s[k1]))-r+ix;
             int c2 = tid % CHANNEL_STRIDE;
 
@@ -236,7 +238,6 @@ __global__ void corr_backward_kernel(
             if (within_bounds(h2, w2, H2, W2))
               atomicAdd(fptr+c+c2, f2_grad[c2][k1]);
           }
-        }
       } 
     }
     __syncthreads();
@@ -270,7 +271,8 @@ std::vector<torch::Tensor> corr_cuda_forward(
 
   const auto rd = 2 * radius + 1;
   auto opts = fmap1.options();
-  auto corr = torch::zeros({B, N, rd*rd, H, W}, opts);
+  //auto corr = torch::zeros({B, N, rd*rd, H, W}, opts);
+  auto corr = torch::zeros({B, N, rd, H, W}, opts);
   
   const dim3 blocks(B, (H+BLOCK_H-1)/BLOCK_H, (W+BLOCK_W-1)/BLOCK_W);
   const dim3 threads(BLOCK_H, BLOCK_W);
